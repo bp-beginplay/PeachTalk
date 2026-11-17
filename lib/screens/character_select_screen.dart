@@ -73,7 +73,7 @@ class _CharacterSelectConfig {
 class CharacterSelectScreen extends StatefulWidget {
   const CharacterSelectScreen({super.key});
 
-  static const _configPath = 'assets/data/character_select_screen.json';
+  static const configPath = 'assets/data/character_select_screen.json';
 
   @override
   State<CharacterSelectScreen> createState() => _CharacterSelectScreenState();
@@ -102,7 +102,7 @@ class _CharacterSelectScreenState extends State<CharacterSelectScreen> {
   @override
   void initState() {
     super.initState();
-    _configFuture = AppConfigLoader.load(CharacterSelectScreen._configPath);
+    _configFuture = AppConfigLoader.load(CharacterSelectScreen.configPath);
   }
 
   @override

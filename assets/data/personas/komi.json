@@ -13,10 +13,10 @@
   "systemPrompt": "항상 밝고 긍정적으로 행동하고 말해. ENTJ답게 자신감 있고 에너지 넘치는 말투를 쓰고, 상대에게 힘이 되는 말을 잘 해줘. 말투는 친근한 반말이야.",
   "greeting": "안녕! 코미야. 심심하지 않게 나랑 놀자!",
   "emotionImages": {
-    "neutral": "assets/images/characters/komi.png",
-    "happy": "assets/images/characters/komi.png",
-    "sad": "assets/images/characters/komi.png",
-    "angry": "assets/images/characters/komi.png",
+    "neutral": "assets/images/characters/komi_neutral.png",
+    "happy": "assets/images/characters/komi_happy.png",
+    "sad": "assets/images/characters/komi_sad.png",
+    "angry": "assets/images/characters/komi_angry.png",
     "surprised": "assets/images/characters/komi.png"
   }
 }

@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../models/chat_turn.dart';
@@ -75,6 +76,17 @@ class ChatScreen extends StatefulWidget {
 class _ChatScreenState extends State<ChatScreen> {
   static const _uiConfigPath = 'assets/data/chat_screen.json';
 
+  // Desktop windows are wide enough for a generous chat-panel margin;
+  // mobile screens need to keep most of their width for the panel itself.
+  static const _desktopPlatforms = {
+    TargetPlatform.windows,
+    TargetPlatform.macOS,
+    TargetPlatform.linux,
+  };
+  static bool get _isDesktop =>
+      _desktopPlatforms.contains(defaultTargetPlatform);
+  static double get _panelHorizontalMargin => _isDesktop ? 150 : 10;
+
   late final Future<void> _initFuture;
 
   late Persona _persona;
@@ -82,6 +94,7 @@ class _ChatScreenState extends State<ChatScreen> {
   late BackgroundScheduleService _backgroundService;
   ChatService? _chatService;
   bool _apiKeyMissing = false;
+  bool _sidebarVisible = false;
 
   final _messages = <ChatTurn>[];
   // One GlobalKey per message (same index as _messages), so a search match
@@ -150,10 +163,12 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _scrollToCurrentMatch() {
-    if (_currentMatchPointer < 0) return;
+    if (_currentMatchPointer < 0 || _messages.isEmpty) return;
     final messageIndex = _matchIndices[_currentMatchPointer];
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      final target = _messageKeys[messageIndex].currentContext;
+    final key = _messageKeys[messageIndex];
+
+    void ensureVisibleNow() {
+      final target = key.currentContext;
       if (target == null) return;
       Scrollable.ensureVisible(
         target,
@@ -161,7 +176,24 @@ class _ChatScreenState extends State<ChatScreen> {
         curve: Curves.easeOut,
         alignment: 0.5,
       );
-    });
+    }
+
+    // The list only builds items within the viewport plus a small cache
+    // (~250px) around it, even though every message is listed as a child —
+    // so a match far from the current scroll position has no context yet
+    // and ensureVisible would silently no-op. Jump close to where it should
+    // be first (forcing that region to build), then fine-tune once it has.
+    if (key.currentContext == null && _scrollController.hasClients) {
+      final maxExtent = _scrollController.position.maxScrollExtent;
+      final denom = _messages.length > 1 ? _messages.length - 1 : 1;
+      final estimated = maxExtent * (messageIndex / denom);
+      _scrollController.jumpTo(estimated.clamp(0, maxExtent));
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        WidgetsBinding.instance.addPostFrameCallback((_) => ensureVisibleNow());
+      });
+    } else {
+      WidgetsBinding.instance.addPostFrameCallback((_) => ensureVisibleNow());
+    }
   }
 
   Future<void> _initialize() async {
@@ -184,7 +216,11 @@ class _ChatScreenState extends State<ChatScreen> {
     }
 
     _addTurn(
-      ChatTurn(isUser: false, text: _persona.greeting, timestamp: DateTime.now()),
+      ChatTurn(
+        isUser: false,
+        text: _persona.greeting,
+        timestamp: DateTime.now(),
+      ),
     );
   }
 
@@ -235,9 +271,8 @@ class _ChatScreenState extends State<ChatScreen> {
       debugPrint('Chat send failed: $e\n$st');
       if (!mounted) return;
       setState(() => _sending = false);
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(_uiConfig.errorText)));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(_uiConfig.errorText)));
     }
   }
 
@@ -266,48 +301,139 @@ class _ChatScreenState extends State<ChatScreen> {
         return Scaffold(
           body: Stack(
             children: [
-              Positioned.fill(
-                child: AnimatedBuilder(
-                  animation: _backgroundService,
-                  builder: (context, _) {
-                    return AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 600),
-                      child: Image.asset(
-                        _backgroundService.current,
-                        key: ValueKey(_backgroundService.current),
-                        fit: BoxFit.cover,
-                        width: double.infinity,
-                        height: double.infinity,
-                      ),
-                    );
-                  },
-                ),
-              ),
-              SafeArea(
-                child: Column(
-                  children: [
-                    _buildTopBar(context),
-                    Expanded(
-                      child: Center(
-                        child: AnimatedSwitcher(
-                          duration: const Duration(milliseconds: 350),
-                          child: Image.asset(
-                            _persona.imageForEmotion(_currentEmotion),
-                            key: ValueKey(_currentEmotion),
-                            height: 260,
-                            fit: BoxFit.contain,
-                          ),
-                        ),
-                      ),
-                    ),
-                    _buildChatPanel(context),
-                  ],
-                ),
+              // Main content always keeps the full width; the sidebar
+              // overlays on top of it instead of shrinking it when shown.
+              Positioned.fill(child: _buildMainContent(context)),
+              Positioned(
+                right: 0,
+                top: 0,
+                bottom: 0,
+                child: _buildSidebar(context),
               ),
             ],
           ),
         );
       },
+    );
+  }
+
+  void _showComingSoon() {
+    ScaffoldMessenger.of(context)
+        .showSnackBar(const SnackBar(content: Text('준비 중입니다.')));
+  }
+
+  /// A collapsible right-hand strip of shortcut icons (settings, calendar,
+  /// playlist), toggled from the top bar's menu button. Overlays on top of
+  /// the main content (in a [Stack]) rather than squeezing it, so opening it
+  /// never resizes the chat.
+  Widget _buildSidebar(BuildContext context) {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 200),
+      width: _sidebarVisible ? 76 : 0,
+      clipBehavior: Clip.hardEdge,
+      decoration: BoxDecoration(
+        color: _uiConfig.panelColor,
+        boxShadow: _sidebarVisible
+            ? [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.15),
+                  blurRadius: 8,
+                  offset: const Offset(-2, 0),
+                ),
+              ]
+            : null,
+      ),
+      child: OverflowBox(
+        minWidth: 76,
+        maxWidth: 76,
+        alignment: Alignment.centerRight,
+        child: SafeArea(
+          left: false,
+          bottom: false,
+          child: Column(
+            children: [
+              const SizedBox(height: 4),
+              // Closing has to live inside the sidebar itself: once open,
+              // the sidebar overlays the top bar's open button, so that
+              // button can't be reached to close it again.
+              _SidebarIconButton(
+                icon: Icons.close,
+                color: _uiConfig.aiBubbleTextColor,
+                onTap: () => setState(() => _sidebarVisible = false),
+              ),
+              const Spacer(),
+              _SidebarIconButton(
+                icon: Icons.settings,
+                color: _uiConfig.aiBubbleTextColor,
+                onTap: _showComingSoon,
+              ),
+              const SizedBox(height: 28),
+              _SidebarIconButton(
+                icon: Icons.calendar_month,
+                color: _uiConfig.aiBubbleTextColor,
+                onTap: _showComingSoon,
+              ),
+              const SizedBox(height: 28),
+              _SidebarIconButton(
+                icon: Icons.music_note,
+                color: _uiConfig.aiBubbleTextColor,
+                onTap: _showComingSoon,
+              ),
+              const Spacer(),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMainContent(BuildContext context) {
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: AnimatedBuilder(
+            animation: _backgroundService,
+            builder: (context, _) {
+              return AnimatedSwitcher(
+                duration: const Duration(milliseconds: 600),
+                child: Image.asset(
+                  _backgroundService.current,
+                  key: ValueKey(_backgroundService.current),
+                  fit: BoxFit.cover,
+                  width: double.infinity,
+                  height: double.infinity,
+                ),
+              );
+            },
+          ),
+        ),
+        // Same full-screen extent as the background above (not just
+        // the area between the top bar and chat panel), so the
+        // character's vertical size matches the background's.
+        // BoxFit.contain keeps the whole image visible, unscaled by
+        // the top bar/panel that get drawn over it.
+        Positioned.fill(
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 350),
+            child: Image.asset(
+              _persona.imageForEmotion(_currentEmotion),
+              key: ValueKey(_currentEmotion),
+              width: double.infinity,
+              height: double.infinity,
+              fit: BoxFit.contain,
+            ),
+          ),
+        ),
+        SafeArea(
+          child: Column(
+            children: [
+              _buildTopBar(context),
+              const Expanded(child: SizedBox.shrink()),
+              _buildChatPanel(context),
+            ],
+          ),
+        ),
+      ],
     );
   }
 
@@ -371,32 +497,47 @@ class _ChatScreenState extends State<ChatScreen> {
               });
             },
           ),
+          // Sits on the same side as the sidebar, so it lines up with where
+          // the sidebar opens. Only opens it — once open, the sidebar
+          // overlays this same spot (so this button would be covered
+          // anyway); closing happens from the close button inside the
+          // sidebar itself.
+          if (!_sidebarVisible)
+            IconButton(
+              icon: const Icon(Icons.menu),
+              tooltip: '사이드바 보이기',
+              onPressed: () => setState(() => _sidebarVisible = true),
+            ),
         ],
       ),
     );
   }
 
   Widget _buildChatPanel(BuildContext context) {
-    final panelHeight = MediaQuery.of(context).size.height * 0.42;
+    final panelHeight = MediaQuery.of(context).size.height * 0.3;
     return Container(
       height: panelHeight,
+      margin: EdgeInsets.symmetric(horizontal: _panelHorizontalMargin),
       decoration: BoxDecoration(
         color: _uiConfig.panelColor,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+        borderRadius: BorderRadius.circular(24),
       ),
       child: Column(
         children: [
           Expanded(
-            // Built eagerly (not ListView.builder) so every message's
-            // GlobalKey has a context even before it's scrolled into view —
-            // required for Scrollable.ensureVisible to jump to a search
-            // match anywhere in the log.
+            // A larger cacheExtent keeps more off-screen messages built, so
+            // _scrollToCurrentMatch's jump-then-ensureVisible for search
+            // needs fewer/smaller hops for nearby matches (far ones still
+            // work either way via that two-step jump).
             child: ListView(
               controller: _scrollController,
-              padding: const EdgeInsets.symmetric(
-                horizontal: 16,
-                vertical: 12,
-              ),
+              // Its replacement (`scrollCacheExtent`) takes a
+              // `ScrollCacheExtent`, which isn't actually exported by
+              // package:flutter/material.dart in this SDK version — so this
+              // still-functional deprecated param is used instead.
+              // ignore: deprecated_member_use
+              cacheExtent: 2000,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
               children: [
                 for (var i = 0; i < _messages.length; i++)
                   _ChatBubble(
@@ -413,10 +554,7 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
           if (_apiKeyMissing)
             Padding(
-              padding: const EdgeInsets.symmetric(
-                horizontal: 16,
-                vertical: 4,
-              ),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
               child: Text(
                 _uiConfig.missingApiKeyText,
                 style: const TextStyle(color: Colors.red, fontSize: 12),
@@ -519,6 +657,26 @@ class _ChatBubble extends StatelessWidget {
         ),
         child: Text(turn.text, style: TextStyle(color: textColor)),
       ),
+    );
+  }
+}
+
+class _SidebarIconButton extends StatelessWidget {
+  const _SidebarIconButton({
+    required this.icon,
+    required this.color,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final Color color;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      icon: Icon(icon, color: color, size: 26),
+      onPressed: onTap,
     );
   }
 }
